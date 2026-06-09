@@ -83,7 +83,7 @@
   <div class="card-title">Analysis settings</div>
   <div class="slider-row">
     <label>Peak threshold</label>
-    <input type="range" id="thresh-slider" min="-90" max="-50" value="-90" step="1" oninput="document.getElementById('thresh-val').textContent=this.value+' dB'">
+    <input type="range" id="thresh-slider" min="-120" max="-50" value="-90" step="1" oninput="document.getElementById('thresh-val').textContent=this.value+' dB'">
     <span class="slider-val" id="thresh-val">-90 dB</span>
   </div>
   <div class="slider-hint"><span>← more peaks (quiet sounds)</span><span>(loud only) fewer peaks →</span></div>
@@ -450,7 +450,7 @@ async function toggleAnalyzer() {
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = parseInt(fftSel.value);
     analyser.smoothingTimeConstant = 0.5;
-    analyser.minDecibels = -110;
+    analyser.minDecibels = -120;
     analyser.maxDecibels = -20;
     source = audioCtx.createMediaStreamSource(stream);
     source.connect(analyser);
