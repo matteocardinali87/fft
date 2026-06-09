@@ -1,1 +1,3 @@
 # fft
+
+This is an open project. I am just a physicist with a noisy car, trying to understand what is going on with the help of FFT and AI... 
