@@ -61,13 +61,11 @@
 <div class="card">
   <div class="card-title">Spectrum — 20 to 500 Hz (log scale)</div>
   <canvas id="spectrum" height="160"></canvas>
-  <div class="peaks" id="peaks-display">Tap Start to begin</div>
 </div>
 
 <div class="card">
   <div class="card-title">Vibration spectrum — 0 to 30 Hz (accelerometer, linear scale)</div>
   <canvas id="accel-spectrum" height="120"></canvas>
-  <div class="peaks" id="accel-peaks-display">Tap Start to begin · place phone on a hard surface</div>
 </div>
 
 <div class="card">
@@ -115,7 +113,6 @@ const specCanvas = document.getElementById('spectrum');
 const wfCanvas = document.getElementById('waterfall');
 const peakFreqEl = document.getElementById('peak-freq');
 const peakDbEl = document.getElementById('peak-db');
-const peaksDisplay = document.getElementById('peaks-display');
 const toggleBtn = document.getElementById('toggle-btn');
 const fftSel = document.getElementById('fft-size');
 const errorMsg = document.getElementById('error-msg');
@@ -259,6 +256,13 @@ function drawAccelSpectrum(mags, sr, W) {
     accelCtx.beginPath(); accelCtx.moveTo(x,0); accelCtx.lineTo(x,H); accelCtx.stroke();
     accelCtx.fillText(f+'Hz', x, H-2);
   }
+  if (!mags) {
+    accelCtx.textAlign = 'center';
+    accelCtx.font = '12px -apple-system, sans-serif';
+    accelCtx.fillStyle = dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)';
+    accelCtx.fillText(accelIdx > 0 ? `Filling buffer… ${Math.min(accelIdx, ACCEL_BUF_SIZE)}/${ACCEL_BUF_SIZE}` : 'No motion data — start analyzer', W/2, (H-14)/2);
+    return [];
+  }
   const fpb = sr/(mags.length*2);
   const maxBin = Math.min(Math.floor(MAX_HZ/fpb), mags.length-1);
   let peak = 1e-12;
@@ -371,19 +375,10 @@ function draw() {
   }
   sCtx.stroke();
 
-  // Accelerometer — compute every frame (256-pt FFT is cheap), draw after width is set
+  // Accelerometer — always draw (handles null internally so grid is always visible)
   const accelMags = computeAccelFFT();
-  if (accelMags) {
-    latestAccelMags = accelMags;
-    latestAccelPeaks = drawAccelSpectrum(accelMags, accelSampleRate, W);
-    const apEl = document.getElementById('accel-peaks-display');
-    apEl.innerHTML = latestAccelPeaks.length
-      ? 'Vibration peaks: ' + latestAccelPeaks.map(p=>`<span class="peak-tag harmonic-tag">${p.freq} Hz · ${p.mag} m/s²</span>`).join('')
-      : 'No vibration peaks detected';
-  } else if (accelIdx > 0) {
-    const apEl = document.getElementById('accel-peaks-display');
-    apEl.textContent = `Buffer filling… ${Math.min(accelIdx, ACCEL_BUF_SIZE)}/${ACCEL_BUF_SIZE} samples`;
-  }
+  latestAccelPeaks = drawAccelSpectrum(accelMags, accelSampleRate, W);
+  if (accelMags) latestAccelMags = accelMags;
 
   const wH = wfCanvas.height;
   if (!wfImageData || wfImageData.width!==W) wfImageData = wfCtx.createImageData(W, wH);
@@ -422,14 +417,8 @@ function draw() {
       sCtx.beginPath(); sCtx.arc(x,y,3,0,Math.PI*2); sCtx.fill();
       sCtx.fillText(p.freq+'Hz', Math.min(x+4,W-42), Math.max(y-5,12));
     }
-    const ratio = peaks.length>=2 ? peaks[1].freq/peaks[0].freq : null;
-    const harm = ratio && Math.abs(ratio-2)<0.18;
-    let html = 'Peaks: ' + peaks.slice(0,4).map(p=>`<span class="peak-tag">${p.freq} Hz / ${p.db} dB</span>`).join('');
-    if (harm) html += ' <span class="peak-tag harmonic-tag">harmonic pair ×2 ✓</span>';
-    peaksDisplay.innerHTML = html;
   } else {
     peakFreqEl.textContent='— Hz'; peakDbEl.textContent='— dB';
-    peaksDisplay.textContent='No clear peaks — try increasing FFT size';
   }
   animId = requestAnimationFrame(draw);
 }
@@ -447,8 +436,7 @@ async function toggleAnalyzer() {
     peakFreqEl.textContent='— Hz'; peakDbEl.textContent='— dB';
     document.getElementById('gps-speed').textContent='— km/h';
     document.getElementById('gps-status').textContent='Tap Start to acquire GPS signal';
-    document.getElementById('accel-peaks-display').textContent='Tap Start to begin · place phone on a hard surface';
-    peaksDisplay.textContent='Tap Start to begin'; wfImageData=null;
+    wfImageData=null;
     return;
   }
   try {
@@ -465,7 +453,6 @@ async function toggleAnalyzer() {
     accelIdx=0; accelFilled=false; accelIntervals=[]; latestAccelPeaks=[]; latestAccelMags=null; accelLastTime=0;
     document.getElementById('save-csv-btn').disabled = true;
     document.getElementById('gps-status').textContent = 'Acquiring GPS…';
-    document.getElementById('accel-peaks-display').textContent = 'Waiting for motion data… (~4 s)';
     startGps();
     await requestMotionPermission();
     toggleBtn.textContent='Stop analyzer'; toggleBtn.classList.add('running');
