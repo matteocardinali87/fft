@@ -28,6 +28,8 @@
   .wf-scroll { height: 200px; overflow-y: auto; border-radius: 6px; }
   .wf-scroll canvas { border-radius: 0; }
   .error { color: #ff3b30; font-size: 13px; margin-top: 8px; text-align: center; }
+  .btn-save { width: 100%; margin-top: 8px; padding: 10px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: #34c759; color: #fff; }
+  .btn-save:disabled { background: #c7c7cc; cursor: default; }
   @media (prefers-color-scheme: dark) {
     body { background: #1c1c1e; color: #f5f5f7; }
     .metric, .card { background: #2c2c2e; box-shadow: none; }
@@ -60,6 +62,7 @@
     <canvas id="waterfall" height="400"></canvas>
   </div>
   <div class="hint">Horizontal bright bands = sustained resonance at that frequency</div>
+  <button class="btn-save" id="save-csv-btn" onclick="saveCSV()" disabled>Save as CSV for Claude analysis</button>
 </div>
 
 <div class="controls">
@@ -93,6 +96,8 @@ let wfImageData = null;
 let lastWfTime = 0;
 const WF_INTERVAL = 150; // ms per row → 200 rows × 150 ms = 30 s history
 const WF_ROW_HEIGHT = 2;  // px per time step → canvas 200×2 = 400 px total
+let wfHistory = [];  // [{t, peaks}] for CSV export
+let recordStart = 0;
 
 function freqToX(freq, width) {
   const lo = Math.log10(FFT_MIN), hi = Math.log10(FFT_MAX);
@@ -188,6 +193,8 @@ function draw() {
     }
     wfImageData.data.set(shifted);
     document.getElementById('wf-scroll').scrollTop = 0;
+    wfHistory.push({ t: +((now - recordStart) / 1000).toFixed(2), peaks: findPeaks(data, sampleRate, analyser.fftSize) });
+    document.getElementById('save-csv-btn').disabled = false;
   }
   wfCtx.putImageData(wfImageData, 0, 0);
 
@@ -236,7 +243,8 @@ async function toggleAnalyzer() {
     analyser.maxDecibels = -20;
     source = audioCtx.createMediaStreamSource(stream);
     source.connect(analyser);
-    running=true; wfImageData=null;
+    running=true; wfImageData=null; wfHistory=[]; recordStart=performance.now();
+    document.getElementById('save-csv-btn').disabled = true;
     toggleBtn.textContent='Stop analyzer'; toggleBtn.classList.add('running');
     draw();
   } catch(e) {
@@ -244,6 +252,31 @@ async function toggleAnalyzer() {
   }
 }
 fftSel.addEventListener('change', ()=>{ if(analyser) analyser.fftSize=parseInt(fftSel.value); });
+
+function saveCSV() {
+  if (!wfHistory.length) return;
+  const meta = [
+    '# Car FFT Analyzer — road noise recording',
+    '# Date: ' + new Date().toISOString(),
+    '# Frequency range: 20-500 Hz | Rows: one per 150 ms | Columns: time since start (s), then up to 5 peaks (frequency Hz + level dBFS)',
+    '# Prompt suggestion for Claude: "Analyze these road noise peaks over time. Identify dominant resonance frequencies, any speed-dependent patterns, harmonic relationships, and likely sources (tyre, wheel bearing, body resonance, exhaust)."'
+  ].join('\n');
+  const header = 'time_s,p1_hz,p1_db,p2_hz,p2_db,p3_hz,p3_db,p4_hz,p4_db,p5_hz,p5_db';
+  const rows = wfHistory.map(({t, peaks}) => {
+    const cells = [t];
+    for (let i = 0; i < 5; i++) {
+      cells.push(peaks[i] ? peaks[i].freq : '', peaks[i] ? peaks[i].db : '');
+    }
+    return cells.join(',');
+  });
+  const csv = meta + '\n' + header + '\n' + rows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'car-fft-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 </script>
 </body>
 </html>
