@@ -197,19 +197,6 @@ function onDeviceMotion(e) {
   if (accelIdx >= ACCEL_BUF_SIZE) accelFilled = true;
 }
 
-async function requestMotionPermission() {
-  if (typeof DeviceMotionEvent !== 'undefined' &&
-      typeof DeviceMotionEvent.requestPermission === 'function') {
-    try {
-      const r = await DeviceMotionEvent.requestPermission();
-      if (r === 'granted') { window.addEventListener('devicemotion', onDeviceMotion); return true; }
-      return false;
-    } catch(e) { return false; }
-  }
-  window.addEventListener('devicemotion', onDeviceMotion);
-  return true;
-}
-
 function computeAccelFFT() {
   if (!accelFilled) return null;
   const n = ACCEL_BUF_SIZE, start = accelIdx % n;
@@ -439,6 +426,13 @@ async function toggleAnalyzer() {
     wfImageData=null;
     return;
   }
+  // iOS: DeviceMotion permission MUST be requested first, synchronously in the gesture handler.
+  // Any await before this call breaks the gesture context and permission silently fails.
+  let motionOk = true;
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+    try { motionOk = (await DeviceMotionEvent.requestPermission()) === 'granted'; }
+    catch(e) { motionOk = false; }
+  }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false }, video:false });
     audioCtx = new (window.AudioContext||window.webkitAudioContext)();
@@ -451,10 +445,11 @@ async function toggleAnalyzer() {
     source.connect(analyser);
     running=true; wfImageData=null; wfHistory=[]; recordStart=performance.now();
     accelIdx=0; accelFilled=false; accelIntervals=[]; latestAccelPeaks=[]; latestAccelMags=null; accelLastTime=0;
+    if (motionOk) window.addEventListener('devicemotion', onDeviceMotion);
+    else errorMsg.textContent = 'Motion access denied — vibration spectrum unavailable';
     document.getElementById('save-csv-btn').disabled = true;
     document.getElementById('gps-status').textContent = 'Acquiring GPS…';
     startGps();
-    await requestMotionPermission();
     toggleBtn.textContent='Stop analyzer'; toggleBtn.classList.add('running');
     draw();
   } catch(e) {
