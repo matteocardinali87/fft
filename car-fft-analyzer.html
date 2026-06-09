@@ -25,6 +25,8 @@
   .peak-tag { display: inline-block; background: #e8f0fe; color: #185fa5; border-radius: 6px; padding: 2px 8px; margin: 2px 2px 2px 0; font-size: 12px; font-weight: 500; }
   .harmonic-tag { background: #e6f9f0; color: #0f6e56; }
   .hint { font-size: 12px; color: #8e8e93; margin-top: 6px; text-align: center; }
+  .wf-scroll { height: 200px; overflow-y: auto; border-radius: 6px; }
+  .wf-scroll canvas { border-radius: 0; }
   .error { color: #ff3b30; font-size: 13px; margin-top: 8px; text-align: center; }
   @media (prefers-color-scheme: dark) {
     body { background: #1c1c1e; color: #f5f5f7; }
@@ -53,8 +55,10 @@
 </div>
 
 <div class="card">
-  <div class="card-title">Waterfall — last ~30 s (newest at top)</div>
-  <canvas id="waterfall" height="200"></canvas>
+  <div class="card-title">Waterfall — last ~30 s (newest at top, scroll to explore)</div>
+  <div class="wf-scroll" id="wf-scroll">
+    <canvas id="waterfall" height="400"></canvas>
+  </div>
   <div class="hint">Horizontal bright bands = sustained resonance at that frequency</div>
 </div>
 
@@ -88,6 +92,7 @@ let wfCtx = wfCanvas.getContext('2d');
 let wfImageData = null;
 let lastWfTime = 0;
 const WF_INTERVAL = 150; // ms per row → 200 rows × 150 ms = 30 s history
+const WF_ROW_HEIGHT = 2;  // px per time step → canvas 200×2 = 400 px total
 
 function freqToX(freq, width) {
   const lo = Math.log10(FFT_MIN), hi = Math.log10(FFT_MAX);
@@ -177,9 +182,12 @@ function draw() {
       row[x*4]=r; row[x*4+1]=g; row[x*4+2]=b; row[x*4+3]=255;
     }
     const shifted = new Uint8ClampedArray(wfImageData.data.length);
-    shifted.set(wfImageData.data.subarray(0,(wH-1)*W*4), W*4);
-    for (let x=0; x<W; x++) { shifted[x*4]=row[x*4]; shifted[x*4+1]=row[x*4+1]; shifted[x*4+2]=row[x*4+2]; shifted[x*4+3]=255; }
+    shifted.set(wfImageData.data.subarray(0,(wH-WF_ROW_HEIGHT)*W*4), WF_ROW_HEIGHT*W*4);
+    for (let y=0; y<WF_ROW_HEIGHT; y++) {
+      for (let x=0; x<W; x++) { shifted[y*W*4+x*4]=row[x*4]; shifted[y*W*4+x*4+1]=row[x*4+1]; shifted[y*W*4+x*4+2]=row[x*4+2]; shifted[y*W*4+x*4+3]=255; }
+    }
     wfImageData.data.set(shifted);
+    document.getElementById('wf-scroll').scrollTop = 0;
   }
   wfCtx.putImageData(wfImageData, 0, 0);
 
