@@ -139,6 +139,7 @@ let accelIdx = 0, accelFilled = false;
 let accelSampleRate = 60;
 let accelLastTime = 0, accelIntervals = [];
 let latestAccelPeaks = [];
+let latestAccelMags = null;
 const accelCanvas = document.getElementById('accel-spectrum');
 const accelCtx = accelCanvas.getContext('2d');
 
@@ -370,6 +371,20 @@ function draw() {
   }
   sCtx.stroke();
 
+  // Accelerometer — compute every frame (256-pt FFT is cheap), draw after width is set
+  const accelMags = computeAccelFFT();
+  if (accelMags) {
+    latestAccelMags = accelMags;
+    latestAccelPeaks = drawAccelSpectrum(accelMags, accelSampleRate, W);
+    const apEl = document.getElementById('accel-peaks-display');
+    apEl.innerHTML = latestAccelPeaks.length
+      ? 'Vibration peaks: ' + latestAccelPeaks.map(p=>`<span class="peak-tag harmonic-tag">${p.freq} Hz · ${p.mag} m/s²</span>`).join('')
+      : 'No vibration peaks detected';
+  } else if (accelIdx > 0) {
+    const apEl = document.getElementById('accel-peaks-display');
+    apEl.textContent = `Buffer filling… ${Math.min(accelIdx, ACCEL_BUF_SIZE)}/${ACCEL_BUF_SIZE} samples`;
+  }
+
   const wH = wfCanvas.height;
   if (!wfImageData || wfImageData.width!==W) wfImageData = wfCtx.createImageData(W, wH);
   const now = performance.now();
@@ -390,15 +405,7 @@ function draw() {
     }
     wfImageData.data.set(shifted);
     document.getElementById('wf-scroll').scrollTop = 0;
-    // Accelerometer FFT
-    const accelMags = computeAccelFFT();
-    if (accelMags) {
-      latestAccelPeaks = drawAccelSpectrum(accelMags, accelSampleRate, W);
-      const apEl = document.getElementById('accel-peaks-display');
-      apEl.innerHTML = latestAccelPeaks.length
-        ? 'Vibration peaks: ' + latestAccelPeaks.map(p=>`<span class="peak-tag harmonic-tag">${p.freq} Hz · ${p.mag} m/s²</span>`).join('')
-        : 'No vibration peaks — buffer filling…';
-    }
+    // Accelerometer FFT — log snapshot to history (already drawn above)
     wfHistory.push({ t: +((now-recordStart)/1000).toFixed(2), thresh: getThresh(), gps: latestGpsKmh, gpsAcc: latestGpsAccuracy, accelPeaks: latestAccelPeaks.map(p=>({...p})), peaks: findPeaks(data, sampleRate, analyser.fftSize) });
     document.getElementById('save-csv-btn').disabled = false;
   }
@@ -455,7 +462,7 @@ async function toggleAnalyzer() {
     source = audioCtx.createMediaStreamSource(stream);
     source.connect(analyser);
     running=true; wfImageData=null; wfHistory=[]; recordStart=performance.now();
-    accelIdx=0; accelFilled=false; accelIntervals=[]; latestAccelPeaks=[]; accelLastTime=0;
+    accelIdx=0; accelFilled=false; accelIntervals=[]; latestAccelPeaks=[]; latestAccelMags=null; accelLastTime=0;
     document.getElementById('save-csv-btn').disabled = true;
     document.getElementById('gps-status').textContent = 'Acquiring GPS…';
     document.getElementById('accel-peaks-display').textContent = 'Waiting for motion data… (~4 s)';
