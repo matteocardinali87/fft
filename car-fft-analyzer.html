@@ -53,8 +53,8 @@
 </div>
 
 <div class="card">
-  <div class="card-title">Waterfall — history (newest at top)</div>
-  <canvas id="waterfall" height="100"></canvas>
+  <div class="card-title">Waterfall — last ~30 s (newest at top)</div>
+  <canvas id="waterfall" height="200"></canvas>
   <div class="hint">Horizontal bright bands = sustained resonance at that frequency</div>
 </div>
 
@@ -86,6 +86,8 @@ const fftSel = document.getElementById('fft-size');
 const errorMsg = document.getElementById('error-msg');
 let wfCtx = wfCanvas.getContext('2d');
 let wfImageData = null;
+let lastWfTime = 0;
+const WF_INTERVAL = 150; // ms per row → 200 rows × 150 ms = 30 s history
 
 function freqToX(freq, width) {
   const lo = Math.log10(FFT_MIN), hi = Math.log10(FFT_MAX);
@@ -163,18 +165,22 @@ function draw() {
 
   const wH = wfCanvas.height;
   if (!wfImageData || wfImageData.width!==W) wfImageData = wfCtx.createImageData(W, wH);
-  const row = new Uint8ClampedArray(W*4);
-  for (let x=0; x<W; x++) {
-    const t = x/(W-1);
-    const freq = Math.pow(10, Math.log10(FFT_MIN) + t*(Math.log10(FFT_MAX)-Math.log10(FFT_MIN)));
-    const idx = Math.min(Math.round(freq/binHz), bufLen-1);
-    const [r,g,b] = dbToColor(data[idx]);
-    row[x*4]=r; row[x*4+1]=g; row[x*4+2]=b; row[x*4+3]=255;
+  const now = performance.now();
+  if (now - lastWfTime >= WF_INTERVAL) {
+    lastWfTime = now;
+    const row = new Uint8ClampedArray(W*4);
+    for (let x=0; x<W; x++) {
+      const t = x/(W-1);
+      const freq = Math.pow(10, Math.log10(FFT_MIN) + t*(Math.log10(FFT_MAX)-Math.log10(FFT_MIN)));
+      const idx = Math.min(Math.round(freq/binHz), bufLen-1);
+      const [r,g,b] = dbToColor(data[idx]);
+      row[x*4]=r; row[x*4+1]=g; row[x*4+2]=b; row[x*4+3]=255;
+    }
+    const shifted = new Uint8ClampedArray(wfImageData.data.length);
+    shifted.set(wfImageData.data.subarray(0,(wH-1)*W*4), W*4);
+    for (let x=0; x<W; x++) { shifted[x*4]=row[x*4]; shifted[x*4+1]=row[x*4+1]; shifted[x*4+2]=row[x*4+2]; shifted[x*4+3]=255; }
+    wfImageData.data.set(shifted);
   }
-  const shifted = new Uint8ClampedArray(wfImageData.data.length);
-  shifted.set(wfImageData.data.subarray(0,(wH-1)*W*4), W*4);
-  for (let x=0; x<W; x++) { shifted[x*4]=row[x*4]; shifted[x*4+1]=row[x*4+1]; shifted[x*4+2]=row[x*4+2]; shifted[x*4+3]=255; }
-  wfImageData.data.set(shifted);
   wfCtx.putImageData(wfImageData, 0, 0);
 
   const peaks = findPeaks(data, sampleRate, analyser.fftSize);
