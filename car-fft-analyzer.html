@@ -30,6 +30,20 @@
   .error { color: #ff3b30; font-size: 13px; margin-top: 8px; text-align: center; }
   .btn-save { width: 100%; margin-top: 8px; padding: 10px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: #34c759; color: #fff; }
   .btn-save:disabled { background: #c7c7cc; cursor: default; }
+  .slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .slider-row label { font-size: 13px; color: #6e6e73; white-space: nowrap; }
+  .slider-row input[type=range] { flex: 1; }
+  .slider-val { font-size: 13px; font-weight: 600; color: #1d1d1f; min-width: 52px; text-align: right; }
+  .speed-row { display: flex; gap: 8px; margin-top: 8px; }
+  .speed-row input[type=number] { flex: 1; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid #d1d1d6; background: #fff; }
+  .btn-speed { flex: 1; padding: 8px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; background: #ff9500; color: #fff; }
+  .speed-log { font-size: 12px; color: #6e6e73; margin-top: 6px; min-height: 18px; line-height: 1.8; }
+  .speed-tag { display: inline-block; background: #fff3e0; color: #b35900; border-radius: 5px; padding: 1px 7px; margin: 2px 2px 0 0; font-size: 11px; font-weight: 500; }
+  @media (prefers-color-scheme: dark) {
+    .slider-val { color: #f5f5f7; }
+    .speed-row input[type=number] { background: #2c2c2e; color: #f5f5f7; border-color: #3a3a3c; }
+    .speed-tag { background: #3a2000; color: #ffb74d; }
+  }
   @media (prefers-color-scheme: dark) {
     body { background: #1c1c1e; color: #f5f5f7; }
     .metric, .card { background: #2c2c2e; box-shadow: none; }
@@ -65,14 +79,31 @@
   <button class="btn-save" id="save-csv-btn" onclick="saveCSV()" disabled>Save as CSV for Claude analysis</button>
 </div>
 
-<div class="controls">
-  <label>FFT size</label>
-  <select id="fft-size">
+<div class="card">
+  <div class="card-title">Analysis settings</div>
+  <div class="slider-row">
+    <label>Peak threshold</label>
+    <input type="range" id="thresh-slider" min="-90" max="-50" value="-72" step="1" oninput="document.getElementById('thresh-val').textContent=this.value+' dB'">
+    <span class="slider-val" id="thresh-val">-72 dB</span>
+  </div>
+  <div class="controls" style="margin-bottom:0">
+    <label>FFT size</label>
+    <select id="fft-size">
     <option value="4096">4096 — fast</option>
     <option value="8192">8192 — balanced</option>
     <option value="16384" selected>16384 — best low-freq</option>
     <option value="32768">32768 — maximum</option>
-  </select>
+    </select>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Speed log</div>
+  <div class="speed-row">
+    <input type="number" id="speed-input" min="0" max="300" placeholder="Speed km/h" inputmode="numeric">
+    <button class="btn-speed" id="speed-btn" onclick="addSpeedMarker()" disabled>Add speed marker</button>
+  </div>
+  <div class="speed-log" id="speed-log">Start recording to log speed markers</div>
 </div>
 
 <button id="toggle-btn" onclick="toggleAnalyzer()">Start analyzer</button>
@@ -97,6 +128,7 @@ let lastWfTime = 0;
 const WF_INTERVAL = 150; // ms per row → 200 rows × 150 ms = 30 s history
 const WF_ROW_HEIGHT = 2;  // px per time step → canvas 200×2 = 400 px total
 let wfHistory = [];  // [{t, peaks}] for CSV export
+let speedMarkers = []; // [{t, speed}]
 let recordStart = 0;
 
 function freqToX(freq, width) {
@@ -121,7 +153,8 @@ function findPeaks(data, sampleRate, fftSize) {
   for (let i = minIdx+win; i < maxIdx-win; i++) {
     let ok = true;
     for (let j = i-win; j <= i+win; j++) if (j!==i && data[j]>=data[i]) { ok=false; break; }
-    if (ok && data[i] > -72) peaks.push({ freq: Math.round(i*binHz), db: Math.round(data[i]) });
+      const thresh = parseInt(document.getElementById('thresh-slider').value);
+    if (ok && data[i] > thresh) peaks.push({ freq: Math.round(i*binHz), db: Math.round(data[i]) });
   }
   return peaks.sort((a,b)=>b.db-a.db).slice(0,5);
 }
@@ -229,6 +262,7 @@ async function toggleAnalyzer() {
     if (audioCtx) audioCtx.close();
     audioCtx=analyser=source=null;
     toggleBtn.textContent='Start analyzer'; toggleBtn.classList.remove('running');
+    document.getElementById('speed-btn').disabled = true;
     peakFreqEl.textContent='— Hz'; peakDbEl.textContent='— dB';
     peaksDisplay.textContent='Tap Start to begin'; wfImageData=null;
     return;
@@ -239,12 +273,14 @@ async function toggleAnalyzer() {
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = parseInt(fftSel.value);
     analyser.smoothingTimeConstant = 0.75;
-    analyser.minDecibels = -100;
+    analyser.minDecibels = -110;
     analyser.maxDecibels = -20;
     source = audioCtx.createMediaStreamSource(stream);
     source.connect(analyser);
-    running=true; wfImageData=null; wfHistory=[]; recordStart=performance.now();
+    running=true; wfImageData=null; wfHistory=[]; speedMarkers=[]; recordStart=performance.now();
     document.getElementById('save-csv-btn').disabled = true;
+    document.getElementById('speed-btn').disabled = false;
+    document.getElementById('speed-log').textContent = 'No speed markers yet';
     toggleBtn.textContent='Stop analyzer'; toggleBtn.classList.add('running');
     draw();
   } catch(e) {
@@ -253,27 +289,63 @@ async function toggleAnalyzer() {
 }
 fftSel.addEventListener('change', ()=>{ if(analyser) analyser.fftSize=parseInt(fftSel.value); });
 
-function saveCSV() {
+function addSpeedMarker() {
+  if (!running) return;
+  const val = parseFloat(document.getElementById('speed-input').value);
+  if (isNaN(val) || val < 0) return;
+  const t = +((performance.now() - recordStart) / 1000).toFixed(2);
+  speedMarkers.push({ t, speed: val });
+  const log = document.getElementById('speed-log');
+  log.innerHTML = speedMarkers.map(m => `<span class="speed-tag">${m.t}s → ${m.speed} km/h</span>`).join('');
+}
+
+async function saveCSV() {
   if (!wfHistory.length) return;
+  const thresh = document.getElementById('thresh-slider').value;
   const meta = [
     '# Car FFT Analyzer — road noise recording',
     '# Date: ' + new Date().toISOString(),
-    '# Frequency range: 20-500 Hz | Rows: one per 150 ms | Columns: time since start (s), then up to 5 peaks (frequency Hz + level dBFS)',
-    '# Prompt suggestion for Claude: "Analyze these road noise peaks over time. Identify dominant resonance frequencies, any speed-dependent patterns, harmonic relationships, and likely sources (tyre, wheel bearing, body resonance, exhaust)."'
+    '# Peak threshold: ' + thresh + ' dB | Frequency range: 20-500 Hz | FFT size: ' + (analyser ? analyser.fftSize : fftSel.value),
+    '# Rows: one per 150 ms | Columns: time_s, then up to 5 peaks (Hz + dBFS)',
+    '# Speed markers: rows with type=speed contain the logged vehicle speed at that timestamp',
+    '# Prompt suggestion for Claude: "Analyze these road noise peaks over time. Use the speed markers to correlate resonance frequencies with vehicle speed. Identify dominant frequencies, harmonic relationships, speed-dependent patterns, and likely sources (tyre, wheel bearing, body resonance, exhaust)."'
   ].join('\n');
-  const header = 'time_s,p1_hz,p1_db,p2_hz,p2_db,p3_hz,p3_db,p4_hz,p4_db,p5_hz,p5_db';
-  const rows = wfHistory.map(({t, peaks}) => {
-    const cells = [t];
+  const header = 'type,time_s,p1_hz,p1_db,p2_hz,p2_db,p3_hz,p3_db,p4_hz,p4_db,p5_hz,p5_db,speed_kmh';
+
+  // Merge fft rows and speed markers sorted by time
+  const fftRows = wfHistory.map(({t, peaks}) => {
+    const cells = ['fft', t];
     for (let i = 0; i < 5; i++) {
       cells.push(peaks[i] ? peaks[i].freq : '', peaks[i] ? peaks[i].db : '');
     }
+    cells.push(''); // no speed on fft rows
     return cells.join(',');
   });
-  const csv = meta + '\n' + header + '\n' + rows.join('\n');
+  const speedRows = speedMarkers.map(({t, speed}) =>
+    ['speed', t, '', '', '', '', '', '', '', '', '', '', speed].join(',')
+  );
+  const allRows = [...fftRows, ...speedRows]
+    .map(r => ({ t: parseFloat(r.split(',')[1]), r }))
+    .sort((a, b) => a.t - b.t)
+    .map(x => x.r);
+
+  const csv = meta + '\n' + header + '\n' + allRows.join('\n');
+  const filename = 'car-fft-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.csv';
   const blob = new Blob([csv], { type: 'text/csv' });
+
+  // iOS Safari: prefer Web Share API with file support
+  if (navigator.canShare && navigator.canShare({ files: [new File([blob], filename, { type: 'text/csv' })] })) {
+    try {
+      await navigator.share({ files: [new File([blob], filename, { type: 'text/csv' })], title: 'Car FFT Data' });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user cancelled — don't fall through
+    }
+  }
+  // Standard download fallback (desktop / Android / iOS without share support)
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'car-fft-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.csv';
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
 }
