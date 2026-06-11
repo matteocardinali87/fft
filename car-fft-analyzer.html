@@ -69,12 +69,13 @@
 </div>
 
 <div class="card">
-  <div class="card-title">Waterfall — last ~30 s (newest at top, scroll to explore)</div>
+  <div class="card-title">Waterfall — last ~50 s (newest at top, scroll to explore)</div>
   <div class="wf-scroll" id="wf-scroll">
     <canvas id="waterfall" height="400"></canvas>
   </div>
-  <div class="hint">Horizontal bright bands = sustained resonance at that frequency</div>
-  <button class="btn-save" id="save-csv-btn" onclick="saveCSV()" disabled>Save as CSV for Claude analysis</button>
+  <div class="hint">Horizontal bright bands = sustained resonance · diagonal lines = speed-scaling source</div>
+  <button class="btn-save" id="save-csv-btn" onclick="saveCSV()" disabled>Save as CSV for Claude analysis (incl. full spectrogram)</button>
+  <button class="btn-save" id="save-png-btn" onclick="savePNG()" disabled style="background:#0071e3">Save spectrogram PNG (last ~50 s)</button>
 </div>
 
 <div class="card">
@@ -101,6 +102,7 @@
   <div class="gps-status" id="gps-status">Tap Start to acquire GPS signal</div>
 </div>
 
+<button class="btn-save" id="mark-btn" onclick="markEvent()" disabled style="background:#ff9500; margin-bottom:10px; padding:14px; font-size:16px; border-radius:12px;">Mark — I hear it now</button>
 <button id="toggle-btn" onclick="toggleAnalyzer()">Start analyzer</button>
 <p class="hint" style="margin-top:10px;">Place phone on dashboard · windows closed · engine running</p>
 <div class="error" id="error-msg"></div>
@@ -119,10 +121,51 @@ const errorMsg = document.getElementById('error-msg');
 let wfCtx = wfCanvas.getContext('2d');
 let wfImageData = null;
 let lastWfTime = 0;
-const WF_INTERVAL = 150; // ms per row → 200 rows × 150 ms = 30 s history
+const WF_INTERVAL = 250; // ms per row → 200 rows × 250 ms = 50 s history; also the CSV row rate
 const WF_ROW_HEIGHT = 2;  // px per time step → canvas 200×2 = 400 px total
-let wfHistory = [];  // [{t, thresh, gps, gpsAcc, peaks, accelPeaks}] for CSV export
+let wfHistory = [];  // [{t, thresh, gps, gpsAcc, peaks, accelPeaks, bands, accelBands, mark}] for CSV export
 let recordStart = 0;
+let markPending = false;
+
+// CSV spectrogram bands: 48 log-spaced audio bands 20–500 Hz, 24 linear accel bands 1–25 Hz
+const N_BANDS = 48;
+const BAND_EDGES = (() => {
+  const lo = Math.log10(FFT_MIN), hi = Math.log10(FFT_MAX), e = [];
+  for (let i = 0; i <= N_BANDS; i++) e.push(Math.pow(10, lo + (hi - lo) * i / N_BANDS));
+  return e;
+})();
+const BAND_CENTERS = BAND_EDGES.slice(0, -1).map((lo, i) => +Math.sqrt(lo * BAND_EDGES[i + 1]).toFixed(1));
+
+function bandDbs(data, binHz) {
+  const out = [];
+  for (let b = 0; b < N_BANDS; b++) {
+    const i0 = Math.max(1, Math.ceil(BAND_EDGES[b] / binHz));
+    const i1 = Math.max(i0, Math.floor(BAND_EDGES[b + 1] / binHz));
+    let p = 0, n = 0;
+    for (let i = i0; i <= i1 && i < data.length; i++) { p += Math.pow(10, data[i] / 10); n++; }
+    out.push(n ? Math.round(10 * Math.log10(p / n)) : '');
+  }
+  return out;
+}
+
+function accelBandMags(mags, sr) {
+  if (!mags) return Array(24).fill('');
+  const fpb = sr / (mags.length * 2), out = [];
+  for (let b = 1; b < 25; b++) {
+    const i0 = Math.max(1, Math.ceil(b / fpb)), i1 = Math.floor((b + 1) / fpb);
+    let s = 0, n = 0;
+    for (let i = i0; i <= i1 && i < mags.length; i++) { s += mags[i] * mags[i]; n++; }
+    out.push(n ? +Math.sqrt(s / n).toFixed(4) : '');
+  }
+  return out;
+}
+
+function markEvent() {
+  markPending = true;
+  const b = document.getElementById('mark-btn');
+  b.textContent = 'Marked ✓';
+  setTimeout(() => { b.textContent = 'Mark — I hear it now'; }, 800);
+}
 
 // GPS
 let gpsWatchId = null;
@@ -131,7 +174,9 @@ let latestGpsAccuracy = null;
 
 // Accelerometer
 const ACCEL_BUF_SIZE = 256;
-const accelBuf = new Float32Array(ACCEL_BUF_SIZE);
+const accelBufX = new Float32Array(ACCEL_BUF_SIZE);
+const accelBufY = new Float32Array(ACCEL_BUF_SIZE);
+const accelBufZ = new Float32Array(ACCEL_BUF_SIZE);
 let accelIdx = 0, accelFilled = false;
 let accelSampleRate = 60;
 let accelLastTime = 0, accelIntervals = [];
@@ -192,25 +237,34 @@ function onDeviceMotion(e) {
     }
   }
   accelLastTime = now;
-  accelBuf[accelIdx % ACCEL_BUF_SIZE] = Math.sqrt((a.x||0)**2+(a.y||0)**2+(a.z||0)**2);
+  const k = accelIdx % ACCEL_BUF_SIZE;
+  accelBufX[k] = a.x || 0; accelBufY[k] = a.y || 0; accelBufZ[k] = a.z || 0;
   accelIdx++;
   if (accelIdx >= ACCEL_BUF_SIZE) accelFilled = true;
 }
 
-function computeAccelFFT() {
-  if (!accelFilled) return null;
-  const n = ACCEL_BUF_SIZE, start = accelIdx % n;
+function fftAxis(buf, start) {
+  const n = ACCEL_BUF_SIZE;
   let mean = 0;
-  for (let i=0; i<n; i++) mean += accelBuf[(start+i)%n];
+  for (let i=0; i<n; i++) mean += buf[(start+i)%n];
   mean /= n;
   const re = new Float32Array(n), im = new Float32Array(n);
   for (let i=0; i<n; i++) {
     const hann = 0.5 - 0.5*Math.cos(2*Math.PI*i/(n-1));
-    re[i] = (accelBuf[(start+i)%n] - mean) * hann;
+    re[i] = (buf[(start+i)%n] - mean) * hann;
   }
   computeFFT(re, im);
-  const mags = new Float32Array(n>>1);
-  for (let i=0; i<(n>>1); i++) mags[i] = Math.sqrt(re[i]*re[i]+im[i]*im[i])/(n>>1);
+  const m = new Float32Array(n>>1);
+  for (let i=0; i<(n>>1); i++) m[i] = Math.sqrt(re[i]*re[i]+im[i]*im[i])/(n>>1);
+  return m;
+}
+
+function computeAccelFFT() {
+  if (!accelFilled) return null;
+  const start = accelIdx % ACCEL_BUF_SIZE;
+  const mx = fftAxis(accelBufX, start), my = fftAxis(accelBufY, start), mz = fftAxis(accelBufZ, start);
+  const mags = new Float32Array(ACCEL_BUF_SIZE>>1);
+  for (let i=0; i<mags.length; i++) mags[i] = Math.sqrt(mx[i]*mx[i] + my[i]*my[i] + mz[i]*mz[i]);
   return mags;
 }
 
@@ -387,9 +441,11 @@ function draw() {
     }
     wfImageData.data.set(shifted);
     document.getElementById('wf-scroll').scrollTop = 0;
-    // Accelerometer FFT — log snapshot to history (already drawn above)
-    wfHistory.push({ t: +((now-recordStart)/1000).toFixed(2), thresh: getThresh(), gps: latestGpsKmh, gpsAcc: latestGpsAccuracy, accelPeaks: latestAccelPeaks.map(p=>({...p})), peaks: findPeaks(data, sampleRate, analyser.fftSize) });
+    // Snapshot to history: peaks + full band spectrogram + accel bands + event mark
+    wfHistory.push({ t: +((now-recordStart)/1000).toFixed(2), thresh: getThresh(), gps: latestGpsKmh, gpsAcc: latestGpsAccuracy, accelPeaks: latestAccelPeaks.map(p=>({...p})), peaks: findPeaks(data, sampleRate, analyser.fftSize), bands: bandDbs(data, binHz), accelBands: accelBandMags(latestAccelMags, accelSampleRate), mark: markPending ? 1 : 0 });
+    markPending = false;
     document.getElementById('save-csv-btn').disabled = false;
+    document.getElementById('save-png-btn').disabled = false;
   }
   wfCtx.putImageData(wfImageData, 0, 0);
 
@@ -418,6 +474,7 @@ async function toggleAnalyzer() {
     if (audioCtx) audioCtx.close();
     audioCtx=analyser=source=null;
     toggleBtn.textContent='Start analyzer'; toggleBtn.classList.remove('running');
+    document.getElementById('mark-btn').disabled = true;
     stopGps();
     window.removeEventListener('devicemotion', onDeviceMotion);
     peakFreqEl.textContent='— Hz'; peakDbEl.textContent='— dB';
@@ -443,7 +500,9 @@ async function toggleAnalyzer() {
     analyser.maxDecibels = -20;
     source = audioCtx.createMediaStreamSource(stream);
     source.connect(analyser);
-    running=true; wfImageData=null; wfHistory=[]; recordStart=performance.now();
+    running=true; wfImageData=null; wfHistory=[]; recordStart=performance.now(); markPending=false;
+    document.getElementById('mark-btn').disabled = false;
+    document.getElementById('save-png-btn').disabled = true;
     accelIdx=0; accelFilled=false; accelIntervals=[]; latestAccelPeaks=[]; latestAccelMags=null; accelLastTime=0;
     if (motionOk) window.addEventListener('devicemotion', onDeviceMotion);
     else errorMsg.textContent = 'Motion access denied — vibration spectrum unavailable';
@@ -461,17 +520,24 @@ fftSel.addEventListener('change', ()=>{ if(analyser) analyser.fftSize=parseInt(f
 async function saveCSV() {
   if (!wfHistory.length) return;
   const meta = [
-    '# Car FFT Analyzer — road noise + vibration recording',
+    '# Car FFT Analyzer v2 — road noise + vibration recording with full spectrogram',
     '# Date: ' + new Date().toISOString(),
-    '# FFT size: ' + (analyser ? analyser.fftSize : fftSel.value) + ' | Audio: 20-500 Hz | Accel: 1-25 Hz | thresh_db = active threshold at that row',
-    '# gps_kmh: GPS speed (blank = no fix) | accel magnitudes in m/s²',
-    '# Prompt for Claude: "Analyze audio peaks (Hz/dBFS) and vibration peaks (Hz/m/s²) vs GPS speed. Find peaks that scale with speed (tyre/imbalance ~12 Hz at 90 km/h), fixed body resonances, and harmonic patterns. Identify likely root causes."'
+    '# FFT size: ' + (analyser ? analyser.fftSize : fftSel.value) + ' | Audio: 20-500 Hz | Accel: 1-25 Hz (per-axis FFT, vector-combined) | thresh_db = active threshold at that row',
+    '# gps_kmh: GPS speed (blank = no fix) | accel magnitudes in m/s² | mark=1: driver pressed "I hear it now"',
+    '# ab1..ab' + N_BANDS + ': audio spectrogram, power-avg dBFS per log-spaced band. Band centers (Hz): ' + BAND_CENTERS.join(' '),
+    '# vb1..vb24: vibration spectrogram, RMS m/s² per 1 Hz band, centers 1.5..24.5 Hz',
+    '# Prompt for Claude: "ab/vb columns are a full spectrogram per row. Plot band energy vs gps_kmh to separate speed-scaling sources (diagonal ridges; compute order = Hz / wheel-rotation Hz) from fixed resonances (horizontal ridges). Correlate with mark=1 rows where the driver heard the noise. Peaks columns kept for v1 compatibility."'
   ].join('\n');
-  const header = 'time_s,thresh_db,gps_kmh,gps_acc_m,audio_p1_hz,audio_p1_db,audio_p2_hz,audio_p2_db,audio_p3_hz,audio_p3_db,audio_p4_hz,audio_p4_db,audio_p5_hz,audio_p5_db,accel_p1_hz,accel_p1_mag,accel_p2_hz,accel_p2_mag,accel_p3_hz,accel_p3_mag';
-  const allRows = wfHistory.map(({t, thresh, gps, gpsAcc, peaks, accelPeaks}) => {
+  const header = 'time_s,thresh_db,gps_kmh,gps_acc_m,audio_p1_hz,audio_p1_db,audio_p2_hz,audio_p2_db,audio_p3_hz,audio_p3_db,audio_p4_hz,audio_p4_db,audio_p5_hz,audio_p5_db,accel_p1_hz,accel_p1_mag,accel_p2_hz,accel_p2_mag,accel_p3_hz,accel_p3_mag,mark,'
+    + Array.from({length:N_BANDS},(_,i)=>'ab'+(i+1)).join(',') + ','
+    + Array.from({length:24},(_,i)=>'vb'+(i+1)).join(',');
+  const allRows = wfHistory.map(({t, thresh, gps, gpsAcc, peaks, accelPeaks, bands, accelBands, mark}) => {
     const cells = [t, thresh, gps ?? '', gpsAcc ?? ''];
     for (let i=0; i<5; i++) cells.push(peaks[i]?.freq ?? '', peaks[i]?.db ?? '');
     for (let i=0; i<3; i++) cells.push(accelPeaks[i]?.freq ?? '', accelPeaks[i]?.mag ?? '');
+    cells.push(mark ?? 0);
+    cells.push(...(bands ?? Array(N_BANDS).fill('')));
+    cells.push(...(accelBands ?? Array(24).fill('')));
     return cells.join(',');
   });
   const csv = meta + '\n' + header + '\n' + allRows.join('\n');
@@ -480,6 +546,47 @@ async function saveCSV() {
   if (navigator.canShare && navigator.canShare({ files: [new File([blob], filename, { type: 'text/csv' })] })) {
     try {
       await navigator.share({ files: [new File([blob], filename, { type: 'text/csv' })], title: 'Car FFT Data' });
+      return;
+    } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function savePNG() {
+  if (!wfImageData) return;
+  const W = wfImageData.width, H = wfImageData.height, M = 64, B = 20;
+  const c = document.createElement('canvas');
+  c.width = W + M; c.height = H + B;
+  const x = c.getContext('2d');
+  x.fillStyle = '#101418'; x.fillRect(0, 0, c.width, c.height);
+  x.putImageData(wfImageData, M, 0);
+  x.font = '10px -apple-system, sans-serif';
+  x.fillStyle = '#c8c8cc'; x.textAlign = 'center';
+  for (const f of [30,50,80,100,150,200,300,400,500]) x.fillText(f, M + freqToX(f, W), H + 14);
+  x.fillText('Hz', M + W - 12, H + 14);
+  x.textAlign = 'right';
+  const pxPerSec = WF_ROW_HEIGHT * 1000 / WF_INTERVAL;
+  const last = wfHistory[wfHistory.length - 1];
+  for (let y = 0; y < H - 10; y += 80) {
+    const secAgo = y / pxPerSec;
+    let label = '-' + Math.round(secAgo) + 's';
+    if (last) {
+      const tAt = last.t - secAgo;
+      const row = wfHistory.find(r => r.t >= tAt);
+      if (row && row.gps != null) label += ' · ' + Math.round(row.gps) + ' km/h';
+    }
+    x.fillText(label, M - 4, y + 10);
+  }
+  const filename = 'car-spectrogram-' + new Date().toISOString().replace(/[:.]/g,'-').slice(0,19) + '.png';
+  const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+  if (!blob) return;
+  if (navigator.canShare && navigator.canShare({ files: [new File([blob], filename, { type: 'image/png' })] })) {
+    try {
+      await navigator.share({ files: [new File([blob], filename, { type: 'image/png' })], title: 'Car spectrogram' });
       return;
     } catch (e) { if (e.name === 'AbortError') return; }
   }
