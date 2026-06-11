@@ -143,7 +143,8 @@ function bandDbs(data, binHz) {
     const i1 = Math.max(i0, Math.floor(BAND_EDGES[b + 1] / binHz));
     let p = 0, n = 0;
     for (let i = i0; i <= i1 && i < data.length; i++) { p += Math.pow(10, data[i] / 10); n++; }
-    out.push(n ? Math.round(10 * Math.log10(p / n)) : '');
+    const v = n ? 10 * Math.log10(p / n) : NaN;
+    out.push(Number.isFinite(v) ? Math.round(v) : '');
   }
   return out;
 }
@@ -171,6 +172,7 @@ function markEvent() {
 let gpsWatchId = null;
 let latestGpsKmh = null;
 let latestGpsAccuracy = null;
+let latestGpsHeading = null;
 
 // Accelerometer
 const ACCEL_BUF_SIZE = 256;
@@ -340,6 +342,7 @@ function startGps() {
     pos => {
       latestGpsKmh = pos.coords.speed != null ? +(pos.coords.speed*3.6).toFixed(1) : null;
       latestGpsAccuracy = pos.coords.accuracy != null ? Math.round(pos.coords.accuracy) : null;
+      latestGpsHeading = (pos.coords.heading != null && !Number.isNaN(pos.coords.heading)) ? Math.round(pos.coords.heading) : null;
       document.getElementById('gps-speed').textContent = latestGpsKmh != null ? latestGpsKmh+' km/h' : '— km/h';
       document.getElementById('gps-status').textContent = 'Active' + (latestGpsAccuracy != null ? ' ±'+latestGpsAccuracy+' m' : '');
     },
@@ -349,7 +352,7 @@ function startGps() {
 }
 function stopGps() {
   if (gpsWatchId != null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
-  latestGpsKmh = null; latestGpsAccuracy = null;
+  latestGpsKmh = null; latestGpsAccuracy = null; latestGpsHeading = null;
 }
 
 function getThresh() {
@@ -442,7 +445,7 @@ function draw() {
     wfImageData.data.set(shifted);
     document.getElementById('wf-scroll').scrollTop = 0;
     // Snapshot to history: peaks + full band spectrogram + accel bands + event mark
-    wfHistory.push({ t: +((now-recordStart)/1000).toFixed(2), thresh: getThresh(), gps: latestGpsKmh, gpsAcc: latestGpsAccuracy, accelPeaks: latestAccelPeaks.map(p=>({...p})), peaks: findPeaks(data, sampleRate, analyser.fftSize), bands: bandDbs(data, binHz), accelBands: accelBandMags(latestAccelMags, accelSampleRate), mark: markPending ? 1 : 0 });
+    wfHistory.push({ t: +((now-recordStart)/1000).toFixed(2), thresh: getThresh(), gps: latestGpsKmh, gpsAcc: latestGpsAccuracy, gpsHdg: latestGpsHeading, accelPeaks: latestAccelPeaks.map(p=>({...p})), peaks: findPeaks(data, sampleRate, analyser.fftSize), bands: bandDbs(data, binHz), accelBands: accelBandMags(latestAccelMags, accelSampleRate), mark: markPending ? 1 : 0 });
     markPending = false;
     document.getElementById('save-csv-btn').disabled = false;
     document.getElementById('save-png-btn').disabled = false;
@@ -520,7 +523,7 @@ fftSel.addEventListener('change', ()=>{ if(analyser) analyser.fftSize=parseInt(f
 async function saveCSV() {
   if (!wfHistory.length) return;
   const meta = [
-    '# Car FFT Analyzer v2 — road noise + vibration recording with full spectrogram',
+    '# Car FFT Analyzer v2.1 — road noise + vibration recording with full spectrogram',
     '# Date: ' + new Date().toISOString(),
     '# FFT size: ' + (analyser ? analyser.fftSize : fftSel.value) + ' | Audio: 20-500 Hz | Accel: 1-25 Hz (per-axis FFT, vector-combined) | thresh_db = active threshold at that row',
     '# gps_kmh: GPS speed (blank = no fix) | accel magnitudes in m/s² | mark=1: driver pressed "I hear it now"',
@@ -528,11 +531,11 @@ async function saveCSV() {
     '# vb1..vb24: vibration spectrogram, RMS m/s² per 1 Hz band, centers 1.5..24.5 Hz',
     '# Prompt for Claude: "ab/vb columns are a full spectrogram per row. Plot band energy vs gps_kmh to separate speed-scaling sources (diagonal ridges; compute order = Hz / wheel-rotation Hz) from fixed resonances (horizontal ridges). Correlate with mark=1 rows where the driver heard the noise. Peaks columns kept for v1 compatibility."'
   ].join('\n');
-  const header = 'time_s,thresh_db,gps_kmh,gps_acc_m,audio_p1_hz,audio_p1_db,audio_p2_hz,audio_p2_db,audio_p3_hz,audio_p3_db,audio_p4_hz,audio_p4_db,audio_p5_hz,audio_p5_db,accel_p1_hz,accel_p1_mag,accel_p2_hz,accel_p2_mag,accel_p3_hz,accel_p3_mag,mark,'
+  const header = 'time_s,thresh_db,gps_kmh,gps_acc_m,gps_heading_deg,audio_p1_hz,audio_p1_db,audio_p2_hz,audio_p2_db,audio_p3_hz,audio_p3_db,audio_p4_hz,audio_p4_db,audio_p5_hz,audio_p5_db,accel_p1_hz,accel_p1_mag,accel_p2_hz,accel_p2_mag,accel_p3_hz,accel_p3_mag,mark,'
     + Array.from({length:N_BANDS},(_,i)=>'ab'+(i+1)).join(',') + ','
     + Array.from({length:24},(_,i)=>'vb'+(i+1)).join(',');
-  const allRows = wfHistory.map(({t, thresh, gps, gpsAcc, peaks, accelPeaks, bands, accelBands, mark}) => {
-    const cells = [t, thresh, gps ?? '', gpsAcc ?? ''];
+  const allRows = wfHistory.map(({t, thresh, gps, gpsAcc, gpsHdg, peaks, accelPeaks, bands, accelBands, mark}) => {
+    const cells = [t, thresh, gps ?? '', gpsAcc ?? '', gpsHdg ?? ''];
     for (let i=0; i<5; i++) cells.push(peaks[i]?.freq ?? '', peaks[i]?.db ?? '');
     for (let i=0; i<3; i++) cells.push(accelPeaks[i]?.freq ?? '', accelPeaks[i]?.mag ?? '');
     cells.push(mark ?? 0);
